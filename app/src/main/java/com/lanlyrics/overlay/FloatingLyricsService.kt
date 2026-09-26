@@ -88,6 +88,12 @@ class FloatingLyricsService : Service() {
                 lastSyncTime = System.currentTimeMillis()
             }
             return START_STICKY
+        } else if (action == "ACTION_ANCHOR_SUBTITLE_TEXT") {
+            val anchor = intent.getStringExtra("ANCHOR_TEXT") ?: ""
+            if (anchor.isNotEmpty()) {
+                anchorSubtitleByText(anchor)
+            }
+            return START_STICKY
         }
 
         val serverIp = intent?.getStringExtra("SERVER_IP")
@@ -120,6 +126,26 @@ class FloatingLyricsService : Service() {
                 }
             }
         })
+    }
+
+    private fun anchorSubtitleByText(anchor: String) {
+        if (subtitleTimeline.isEmpty()) return
+        val cleanAnchor = anchor.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
+        if (cleanAnchor.length < 3) return
+
+        for (item in subtitleTimeline) {
+            val cleanZh = item.zh.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
+            val cleanEn = item.en.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
+
+            if ((cleanZh.isNotEmpty() && (cleanZh.contains(cleanAnchor) || cleanAnchor.contains(cleanZh))) ||
+                (cleanEn.isNotEmpty() && (cleanEn.contains(cleanAnchor) || cleanAnchor.contains(cleanEn)))) {
+                android.util.Log.i("FloatingLyricsService", "命中台词锚点！精准校准至: ${item.startMs}ms (台词: ${item.zh})")
+                currentPositionMs = item.startMs
+                lastSyncTime = System.currentTimeMillis()
+                subtitleView.setSubtitles(item.zh, item.en)
+                break
+            }
+        }
     }
 
     private fun setupFloatingWindow() {

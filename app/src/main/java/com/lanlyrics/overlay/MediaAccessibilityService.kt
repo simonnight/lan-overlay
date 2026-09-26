@@ -10,23 +10,22 @@ import java.util.regex.Pattern
 
 /**
  * 影视播放无障碍自动感知服务 (MediaAccessibilityService)
- * 职责：
- * 1. 自动感知 Netflix / Disney+ / HBO 播放界面
- * 2. 毫秒级提取正在播放的影视剧名与季集数 (例如 Stranger Things S4:E1)
- * 3. 提取视频当前播放时间戳 (如 12:34 / 50:12) 自动校准字幕时间轴
- * 4. 自动通知本地悬浮窗与 NAS 加载对应双语字幕
+ * 具备以下能力：
+ * 1. 自动感知 Netflix / Disney+ / HBO 播放界面与剧名季集 (如 Stranger Things S4:E1)
+ * 2. 看到一半(续播)自适应：通过多重时间正则与 SeekBar 属性抓取当前续播进度
+ * 3. 官方台词文本锚点拦截：通过对比当前台词在剧本中的位置，实现毫秒级绝对硬对齐
  */
 class MediaAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "MediaA11y"
         private val TARGET_PACKAGES = setOf(
-            "com.netflix.ninja",        // Netflix Android TV
-            "com.netflix.mediaclient",  // Netflix 手机/平板
-            "com.disney.disneyplus",    // Disney+
+            "com.netflix.ninja",                 // Netflix Android TV
+            "com.netflix.mediaclient",           // Netflix 手机/平板
+            "com.disney.disneyplus",             // Disney+
             "com.amazon.amazonvideo.livingroom", // Prime Video TV
-            "com.amazon.avod.thirdpartyclient",  // Prime Video Mobile
-            "com.wbd.stream"            // Max (HBO)
+            "com.amazon.avod.thirdpartyclient",   // Prime Video Mobile
+            "com.wbd.stream"                     // Max (HBO)
         )
 
         // 季集匹配正则，如 S4:E1, S04E01, Season 4 Episode 1, 第4季 第1集
@@ -34,14 +33,27 @@ class MediaAccessibilityService : AccessibilityService() {
             """(?i)(?:s(?:eason)?\s*(\d+)[\s:x_e-]+(?:ep?|episode)?\s*(\d+))|(?:第\s*(\d+)\s*季\s*第\s*(\d+)\s*集)"""
         )
 
-        // 播放进度时间正则，如 03:45 / 45:10 或 1:23:45
-        private val TIME_PROGRESS_PATTERN = Pattern.compile(
+        // 双时间戳匹配正则，如 03:45 / 45:10 或 1:23:45 / 2:10:00
+        private val DUAL_TIME_PATTERN = Pattern.compile(
             """(\d{1,2}:\d{2}(?::\d{2})?)\s*[/／]\s*(\d{1,2}:\d{2}(?::\d{2})?)"""
+        )
+
+        // 单时间戳匹配正则 (很多续播只显示当前时间，如 23:15 或 -31:45)
+        private val SINGLE_TIME_PATTERN = Pattern.compile(
+            """^-?\s*(\d{1,2}:\d{2}(?::\d{2})?)$"""
+        )
+
+        // 过滤非台词的常见 UI 关键字
+        private val UI_BLACKLIST_WORDS = setOf(
+            "下一集", "选集", "音频与字幕", "倍速", "锁屏", "返回", "播放", "暂停",
+            "next episode", "episodes", "audio & subtitles", "speed", "lock", "skip intro", "跳过片头"
         )
     }
 
     private var lastMatchedTitle = ""
     private var lastRequestTime = 0L
+    private var lastCalibrateMs = 0L
+    private var lastCalibrateTime = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -53,7 +65,7 @@ class MediaAccessibilityService : AccessibilityService() {
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
             packageNames = TARGET_PACKAGES.toTypedArray()
         }
-        Log.i(TAG, "影视无障碍自动感知服务已就绪！监听目标流媒体平台...")
+        Log.i(TAG, "影视无障碍自动感知服务已就绪！监听流媒体平台与续播时间轴...")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -64,13 +76,16 @@ class MediaAccessibilityService : AccessibilityService() {
         val rootNode = rootInActiveWindow ?: return
         try {
             val textList = mutableListOf<String>()
-            collectAllTexts(rootNode, textList)
+            collectAllTextsAndNodes(rootNode, textList)
 
             // 1. 扫描剧集名称与季集信息
             detectTitleAndEpisode(textList, pkg)
 
-            // 2. 扫描时间进度并自动校准时钟
+            // 2. 扫描时间进度（支持从头播与看到一半续播）
             detectPlaybackTime(textList)
+
+            // 3. 扫描官方字幕台词锚点进行语义对齐
+            detectSubtitleTextAnchor(textList)
 
         } catch (e: Exception) {
             Log.e(TAG, "扫描无障碍节点异常: ${e.message}")
@@ -79,25 +94,41 @@ class MediaAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun collectAllTexts(node: AccessibilityNodeInfo?, result: MutableList<String>) {
+    private fun collectAllTextsAndNodes(node: AccessibilityNodeInfo?, result: MutableList<String>) {
         if (node == null) return
+
         val txt = node.text?.toString()?.trim()
-        if (!txt.isNullOrEmpty() && txt.length < 120) {
+        if (!txt.isNullOrEmpty() && txt.length < 150) {
             result.add(txt)
         }
         val desc = node.contentDescription?.toString()?.trim()
-        if (!desc.isNullOrEmpty() && desc.length < 120 && desc != txt) {
+        if (!desc.isNullOrEmpty() && desc.length < 150 && desc != txt) {
             result.add(desc)
         }
 
+        // 检查 SeekBar / 进度条的直接属性 (看到一半时直接读进度比例)
+        if (node.className?.contains("SeekBar", ignoreCase = true) == true ||
+            node.className?.contains("ProgressBar", ignoreCase = true) == true) {
+            node.rangeInfo?.let { range ->
+                if (range.max > 0 && range.current > 0) {
+                    val ratio = range.current / range.max
+                    // 如果拿到当前进度秒数 (有些播放器直接以秒为单位)
+                    if (range.max > 180) { // 大于3分钟，很可能是秒数
+                        val ms = (range.current * 1000).toLong()
+                        dispatchCalibrateTime(ms)
+                    }
+                }
+            }
+        }
+
         for (i in 0 until node.childCount) {
-            collectAllTexts(node.getChild(i), result)
+            collectAllTextsAndNodes(node.getChild(i), result)
         }
     }
 
     private fun detectTitleAndEpisode(texts: List<String>, pkg: String) {
         val now = System.currentTimeMillis()
-        if (now - lastRequestTime < 15000) return // 15秒防抖
+        if (now - lastRequestTime < 10000) return // 10秒防抖
 
         for (text in texts) {
             val matcher = SEASON_EPISODE_PATTERN.matcher(text)
@@ -108,7 +139,6 @@ class MediaAccessibilityService : AccessibilityService() {
                     lastRequestTime = now
                     Log.i(TAG, "[!] 自动捕获到正在播放的剧集: $foundTitle ($pkg)")
 
-                    // 发送 Intent 给后台 FloatingLyricsService，拉取该剧集双语字幕
                     val intent = Intent(this, FloatingLyricsService::class.java).apply {
                         action = "ACTION_AUTO_MATCH_SUBTITLE"
                         putExtra("MEDIA_TITLE", foundTitle)
@@ -123,25 +153,66 @@ class MediaAccessibilityService : AccessibilityService() {
 
     private fun detectPlaybackTime(texts: List<String>) {
         for (text in texts) {
-            val matcher = TIME_PROGRESS_PATTERN.matcher(text)
-            if (matcher.find()) {
-                val curTimeStr = matcher.group(1) ?: continue
+            // 优先匹配双时间戳 23:15 / 54:00
+            val dualMatcher = DUAL_TIME_PATTERN.matcher(text)
+            if (dualMatcher.find()) {
+                val curTimeStr = dualMatcher.group(1) ?: continue
                 val curMs = parseTimeStringToMs(curTimeStr)
                 if (curMs > 0) {
-                    // 通知悬浮窗瞬时校准当前播放时间戳
-                    val intent = Intent(this, FloatingLyricsService::class.java).apply {
-                        action = "ACTION_CALIBRATE_TIME"
-                        putExtra("CALIBRATE_POSITION_MS", curMs)
-                    }
-                    startService(intent)
+                    dispatchCalibrateTime(curMs)
+                    return
+                }
+            }
+
+            // 备选匹配单时间戳 (如 23:15)
+            val singleMatcher = SINGLE_TIME_PATTERN.matcher(text)
+            if (singleMatcher.find()) {
+                val curTimeStr = singleMatcher.group(1) ?: continue
+                val curMs = parseTimeStringToMs(curTimeStr)
+                if (curMs > 0) {
+                    dispatchCalibrateTime(curMs)
                     return
                 }
             }
         }
     }
 
+    private fun detectSubtitleTextAnchor(texts: List<String>) {
+        val now = System.currentTimeMillis()
+        for (text in texts) {
+            val lower = text.lowercase()
+            if (lower in UI_BLACKLIST_WORDS) continue
+            if (text.length in 5..80 && !text.contains(":") && !text.matches(Regex("^[0-9\\s/\\-]+$"))) {
+                // 很可能是正在念的官方台词文本，发送给悬浮窗进行文本锚点对齐
+                val intent = Intent(this, FloatingLyricsService::class.java).apply {
+                    action = "ACTION_ANCHOR_SUBTITLE_TEXT"
+                    putExtra("ANCHOR_TEXT", text)
+                }
+                startService(intent)
+                break
+            }
+        }
+    }
+
+    private fun dispatchCalibrateTime(targetMs: Long) {
+        val now = System.currentTimeMillis()
+        // 1秒内不要重复矫正相同的时间
+        if (Math.abs(targetMs - lastCalibrateMs) < 1000 && now - lastCalibrateTime < 1500) {
+            return
+        }
+        lastCalibrateMs = targetMs
+        lastCalibrateTime = now
+
+        Log.i(TAG, "[*] 正在校准播放进度: ${targetMs / 1000} 秒")
+        val intent = Intent(this, FloatingLyricsService::class.java).apply {
+            action = "ACTION_CALIBRATE_TIME"
+            putExtra("CALIBRATE_POSITION_MS", targetMs)
+        }
+        startService(intent)
+    }
+
     private fun parseTimeStringToMs(timeStr: String): Long {
-        val parts = timeStr.split(":")
+        val parts = timeStr.replace("-", "").trim().split(":")
         return try {
             if (parts.size == 3) {
                 val h = parts[0].toLong()
