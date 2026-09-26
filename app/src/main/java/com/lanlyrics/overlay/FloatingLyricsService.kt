@@ -71,10 +71,55 @@ class FloatingLyricsService : Service() {
         mainHandler.post(frameRunnable)
     }
 
+    private var savedServerIp: String = "192.168.200.120:8990"
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val serverIp = intent?.getStringExtra("SERVER_IP") ?: "192.168.1.100:8999"
+        val action = intent?.action
+        if (action == "ACTION_AUTO_MATCH_SUBTITLE") {
+            val title = intent.getStringExtra("MEDIA_TITLE") ?: ""
+            if (title.isNotEmpty()) {
+                requestSubtitleForTitle(title)
+            }
+            return START_STICKY
+        } else if (action == "ACTION_CALIBRATE_TIME") {
+            val calibMs = intent.getLongExtra("CALIBRATE_POSITION_MS", -1L)
+            if (calibMs >= 0) {
+                currentPositionMs = calibMs
+                lastSyncTime = System.currentTimeMillis()
+            }
+            return START_STICKY
+        }
+
+        val serverIp = intent?.getStringExtra("SERVER_IP")
+            ?: getSharedPreferences("lyrics_cfg", Context.MODE_PRIVATE).getString("server_ip", "192.168.200.120:8990")
+            ?: "192.168.200.120:8990"
+        savedServerIp = serverIp
         connectWebSocket(serverIp)
         return START_STICKY
+    }
+
+    private fun requestSubtitleForTitle(title: String) {
+        val baseUrl = if (savedServerIp.startsWith("http://")) savedServerIp else "http://$savedServerIp"
+        val encTitle = java.net.URLEncoder.encode(title, "UTF-8")
+        val url = "$baseUrl/api/subtitle/sample?title=$encTitle"
+        val req = Request.Builder().url(url).build()
+
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) {
+                android.util.Log.e("FloatingLyricsService", "拉取剧集字幕失败: ${e.message}")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.body?.string()?.let { respStr ->
+                    try {
+                        val obj = JSONObject(respStr)
+                        handleSubtitlePayload(obj)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+        })
     }
 
     private fun setupFloatingWindow() {

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">局域网影视双语字幕</string>
+    <string name="accessibility_desc">用于自动感知电视上 Netflix、Disney+ 等正在播放的影视剧名并自动匹配高品质中英双语字幕。</string>
+</resources>

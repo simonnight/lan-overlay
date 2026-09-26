@@ -76,6 +76,17 @@ class MainActivity : Activity() {
         }
         layout.addView(startBtn)
 
+        val a11yBtn = Button(this).apply {
+            text = "【开启】流媒体自动感知服务 (无障碍)"
+            textSize = 16f
+            setOnClickListener {
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                startActivity(intent)
+                Toast.makeText(this@MainActivity, "请在列表中找到【局域网影视双语字幕】并开启", Toast.LENGTH_LONG).show()
+            }
+        }
+        layout.addView(a11yBtn)
+
         val stopBtn = Button(this).apply {
             text = "停止服务"
             setOnClickListener {
