@@ -3,19 +3,21 @@
     package="com.lanlyrics.overlay">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- 兼容普通手机与 Android TV (onn 盒子) -->
+    <!-- 兼容普通手机、平板与 Android TV (onn 盒子) -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_media_play"
-        android:label="局域网流光歌词"
+        android:label="局域网影视双语字幕"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
