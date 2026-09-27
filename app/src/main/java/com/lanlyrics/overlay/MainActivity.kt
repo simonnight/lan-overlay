@@ -82,7 +82,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
                 startActivity(intent)
-                Toast.makeText(this@MainActivity, "请在列表中找到【局域网影视双语字幕】并开启", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "请在无障碍列表中找到【SubSync Auto Sense】并开启", Toast.LENGTH_LONG).show()
             }
         }
         layout.addView(a11yBtn)

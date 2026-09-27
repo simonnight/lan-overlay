@@ -60,15 +60,16 @@ class MediaAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        serviceInfo = AccessibilityServiceInfo().apply {
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
-                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+        try {
+            val info = serviceInfo ?: AccessibilityServiceInfo()
+            info.flags = info.flags or
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-            packageNames = TARGET_PACKAGES.toTypedArray()
+            serviceInfo = info
+        } catch (e: Throwable) {
+            Log.w(TAG, "微调 serviceInfo 异常，使用 XML 默认配置: ${e.message}")
         }
-        Log.i(TAG, "影视无障碍自动感知服务已就绪！监听流媒体平台与续播时间轴...")
+        Log.i(TAG, "影视无障碍感知服务已连接 (SubSync Auto Sense)！")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -76,8 +77,8 @@ class MediaAccessibilityService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: return
         if (pkg !in TARGET_PACKAGES) return
 
-        val rootNode = rootInActiveWindow ?: return
         try {
+            val rootNode = rootInActiveWindow ?: return
             val textList = mutableListOf<String>()
             collectAllTextsAndNodes(rootNode, textList)
 
@@ -90,10 +91,8 @@ class MediaAccessibilityService : AccessibilityService() {
             // 3. 扫描官方字幕台词锚点进行语义对齐与实时双语补齐
             detectSubtitleTextAnchor(textList)
 
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "扫描无障碍节点异常: ${e.message}")
-        } finally {
-            rootNode.recycle()
         }
     }
 

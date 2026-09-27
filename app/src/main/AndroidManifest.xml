@@ -38,6 +38,8 @@
         <!-- 影视自动感知无障碍服务 -->
         <service
             android:name=".MediaAccessibilityService"
+            android:label="@string/accessibility_service_name"
+            android:description="@string/accessibility_desc"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true">
             <intent-filter>
