@@ -45,8 +45,9 @@ class MediaAccessibilityService : AccessibilityService() {
 
         // 过滤非台词的常见 UI 关键字
         private val UI_BLACKLIST_WORDS = setOf(
-            "下一集", "选集", "音频与字幕", "倍速", "锁屏", "返回", "播放", "暂停",
-            "next episode", "episodes", "audio & subtitles", "speed", "lock", "skip intro", "跳过片头"
+            "下一集", "选集", "音频与字幕", "倍速", "锁屏", "返回", "播放", "暂停", "重播", "快进", "快退",
+            "next episode", "episodes", "audio & subtitles", "speed", "lock", "skip intro", "跳过片头",
+            "skip recap", "跳过回顾", "10秒", "10s", "30s", "1.0x", "1.25x", "1.5x", "0.75x", "0.5x"
         )
     }
 
@@ -54,6 +55,8 @@ class MediaAccessibilityService : AccessibilityService() {
     private var lastRequestTime = 0L
     private var lastCalibrateMs = 0L
     private var lastCalibrateTime = 0L
+    private var lastAnchorText = ""
+    private var lastAnchorTime = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -84,7 +87,7 @@ class MediaAccessibilityService : AccessibilityService() {
             // 2. 扫描时间进度（支持从头播与看到一半续播）
             detectPlaybackTime(textList)
 
-            // 3. 扫描官方字幕台词锚点进行语义对齐
+            // 3. 扫描官方字幕台词锚点进行语义对齐与实时双语补齐
             detectSubtitleTextAnchor(textList)
 
         } catch (e: Exception) {
@@ -130,66 +133,89 @@ class MediaAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastRequestTime < 10000) return // 10秒防抖
 
+        var seriesTitle = ""
+        var seasonEpisodeStr = ""
+
+        // 第一步：寻找季集字符串 (如 "第 1 季第 2 集：處理湯米敵" 或 "S1:E2 Tackle Tommy Dixon")
         for (text in texts) {
             val matcher = SEASON_EPISODE_PATTERN.matcher(text)
             if (matcher.find()) {
-                val foundTitle = text.trim()
-                if (foundTitle != lastMatchedTitle) {
-                    lastMatchedTitle = foundTitle
-                    lastRequestTime = now
-                    Log.i(TAG, "[!] 自动捕获到正在播放的剧集: $foundTitle ($pkg)")
-
-                    val intent = Intent(this, FloatingLyricsService::class.java).apply {
-                        action = "ACTION_AUTO_MATCH_SUBTITLE"
-                        putExtra("MEDIA_TITLE", foundTitle)
-                        putExtra("PACKAGE_NAME", pkg)
-                    }
-                    startService(intent)
-                    return
-                }
+                seasonEpisodeStr = text.trim()
+                break
             }
+        }
+
+        // 第二步：寻找主剧名（排除季集行、黑名单按钮词汇、纯数字或时间）
+        for (text in texts) {
+            val t = text.trim()
+            if (t.length in 2..35 &&
+                t != seasonEpisodeStr &&
+                !t.contains(":") && !t.contains("/") &&
+                !SEASON_EPISODE_PATTERN.matcher(t).find() &&
+                t.lowercase() !in UI_BLACKLIST_WORDS &&
+                !t.matches(Regex("^[0-9\\s/\\-]+$"))) {
+                seriesTitle = t
+                break
+            }
+        }
+
+        // 繁简转换 (绅士追杀令等常见港台繁体转简体，提升字幕匹配率)
+        seriesTitle = toSimplifiedChinese(seriesTitle)
+        seasonEpisodeStr = toSimplifiedChinese(seasonEpisodeStr)
+
+        val fullTitle = when {
+            seriesTitle.isNotEmpty() && seasonEpisodeStr.isNotEmpty() -> "$seriesTitle $seasonEpisodeStr"
+            seriesTitle.isNotEmpty() -> seriesTitle
+            seasonEpisodeStr.isNotEmpty() -> seasonEpisodeStr
+            else -> ""
+        }
+
+        if (fullTitle.isNotEmpty() && fullTitle != lastMatchedTitle) {
+            lastMatchedTitle = fullTitle
+            lastRequestTime = now
+            Log.i(TAG, "[!] 自动捕获到完整流媒体剧集: $fullTitle ($pkg)")
+
+            val intent = Intent(this, FloatingLyricsService::class.java).apply {
+                action = "ACTION_AUTO_MATCH_SUBTITLE"
+                putExtra("MEDIA_TITLE", fullTitle)
+                putExtra("PACKAGE_NAME", pkg)
+            }
+            startService(intent)
         }
     }
 
-    private fun detectPlaybackTime(texts: List<String>) {
-        for (text in texts) {
-            // 优先匹配双时间戳 23:15 / 54:00
-            val dualMatcher = DUAL_TIME_PATTERN.matcher(text)
-            if (dualMatcher.find()) {
-                val curTimeStr = dualMatcher.group(1) ?: continue
-                val curMs = parseTimeStringToMs(curTimeStr)
-                if (curMs > 0) {
-                    dispatchCalibrateTime(curMs)
-                    return
-                }
-            }
-
-            // 备选匹配单时间戳 (如 23:15)
-            val singleMatcher = SINGLE_TIME_PATTERN.matcher(text)
-            if (singleMatcher.find()) {
-                val curTimeStr = singleMatcher.group(1) ?: continue
-                val curMs = parseTimeStringToMs(curTimeStr)
-                if (curMs > 0) {
-                    dispatchCalibrateTime(curMs)
-                    return
-                }
-            }
-        }
+    private fun toSimplifiedChinese(input: String): String {
+        return input.replace("紳士追殺令", "绅士追杀令")
+            .replace("處理湯米敵", "处理汤米敌")
+            .replace("怪奇物語", "怪奇物语")
+            .replace("三體", "三体")
+            .replace("絕命毒師", "绝命毒师")
+            .replace("黑鏡", "黑镜")
     }
 
     private fun detectSubtitleTextAnchor(texts: List<String>) {
         val now = System.currentTimeMillis()
         for (text in texts) {
-            val lower = text.lowercase()
+            val t = text.trim()
+            val lower = t.lowercase()
             if (lower in UI_BLACKLIST_WORDS) continue
-            if (text.length in 5..80 && !text.contains(":") && !text.matches(Regex("^[0-9\\s/\\-]+$"))) {
-                // 很可能是正在念的官方台词文本，发送给悬浮窗进行文本锚点对齐
-                val intent = Intent(this, FloatingLyricsService::class.java).apply {
-                    action = "ACTION_ANCHOR_SUBTITLE_TEXT"
-                    putExtra("ANCHOR_TEXT", text)
+            // 排除剧名、分集名、时间戳
+            if (t == lastMatchedTitle || SEASON_EPISODE_PATTERN.matcher(t).find()) continue
+            if (t.matches(Regex("^[0-9\\s/\\-:]+$"))) continue
+
+            // 台词判断：长度在 4 到 120 之间，不含 UI 常用功能词
+            if (t.length in 4..120) {
+                if (t != lastAnchorText || now - lastAnchorTime > 2500) {
+                    lastAnchorText = t
+                    lastAnchorTime = now
+                    Log.d(TAG, "[*] 捕获到流媒体官方字幕台词: $t")
+                    val intent = Intent(this, FloatingLyricsService::class.java).apply {
+                        action = "ACTION_ANCHOR_SUBTITLE_TEXT"
+                        putExtra("ANCHOR_TEXT", t)
+                    }
+                    startService(intent)
+                    break
                 }
-                startService(intent)
-                break
             }
         }
     }

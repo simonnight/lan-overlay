@@ -128,24 +128,92 @@ class FloatingLyricsService : Service() {
         })
     }
 
+    private var lastLiveText = ""
+    private var lastLiveTextTime = 0L
+
+    private val clearSubtitleRunnable = Runnable {
+        subtitleView.clear()
+    }
+
     private fun anchorSubtitleByText(anchor: String) {
-        if (subtitleTimeline.isEmpty()) return
-        val cleanAnchor = anchor.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
-        if (cleanAnchor.length < 3) return
+        val cleanAnchor = anchor.trim()
+        if (cleanAnchor.length < 2) return
 
-        for (item in subtitleTimeline) {
-            val cleanZh = item.zh.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
-            val cleanEn = item.en.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
+        // 1. 如果本地已有整集时间轴，做绝对时间硬对齐
+        if (subtitleTimeline.isNotEmpty()) {
+            val anchorKey = cleanAnchor.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
+            for (item in subtitleTimeline) {
+                val cleanZh = item.zh.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
+                val cleanEn = item.en.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
 
-            if ((cleanZh.isNotEmpty() && (cleanZh.contains(cleanAnchor) || cleanAnchor.contains(cleanZh))) ||
-                (cleanEn.isNotEmpty() && (cleanEn.contains(cleanAnchor) || cleanAnchor.contains(cleanEn)))) {
-                android.util.Log.i("FloatingLyricsService", "命中台词锚点！精准校准至: ${item.startMs}ms (台词: ${item.zh})")
-                currentPositionMs = item.startMs
-                lastSyncTime = System.currentTimeMillis()
-                subtitleView.setSubtitles(item.zh, item.en)
-                break
+                if ((cleanZh.isNotEmpty() && (cleanZh.contains(anchorKey) || anchorKey.contains(cleanZh))) ||
+                    (cleanEn.isNotEmpty() && (cleanEn.contains(anchorKey) || anchorKey.contains(cleanEn)))) {
+                    android.util.Log.i("FloatingLyricsService", "命中本地时间轴锚点！精准校准至: ${item.startMs}ms (台词: ${item.zh})")
+                    currentPositionMs = item.startMs
+                    lastSyncTime = System.currentTimeMillis()
+                    mainHandler.post {
+                        isSubtitleMode = true
+                        lyricsView.visibility = View.GONE
+                        subtitleView.visibility = View.VISIBLE
+                        subtitleView.setSubtitles(item.zh, item.en)
+                    }
+                    return
+                }
             }
         }
+
+        // 2. 无论是否有整集时间轴，只要抓到台词，立即调用实时双语补齐接口！
+        val now = System.currentTimeMillis()
+        if (cleanAnchor == lastLiveText && now - lastLiveTextTime < 2500) {
+            return
+        }
+        lastLiveText = cleanAnchor
+        lastLiveTextTime = now
+
+        requestLiveBilingualSubtitle(cleanAnchor)
+    }
+
+    private fun requestLiveBilingualSubtitle(rawText: String) {
+        val baseUrl = if (savedServerIp.startsWith("http://")) savedServerIp else "http://$savedServerIp"
+        val url = "$baseUrl/api/subtitle/live-bilingual"
+        val jsonBody = JSONObject().apply {
+            put("text", rawText)
+            put("duration", 5000)
+        }.toString()
+
+        val req = Request.Builder()
+            .url(url)
+            .post(RequestBody.create(MediaType.parse("application/json; charset=utf-8"), jsonBody))
+            .build()
+
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) {
+                android.util.Log.e("FloatingLyricsService", "实时双语网络请求失败: ${e.message}")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.body?.string()?.let { respStr ->
+                    try {
+                        val obj = JSONObject(respStr)
+                        val zh = obj.optString("zh", "")
+                        val en = obj.optString("en", "")
+                        if (zh.isNotEmpty() || en.isNotEmpty()) {
+                            mainHandler.post {
+                                isSubtitleMode = true
+                                lyricsView.visibility = View.GONE
+                                subtitleView.visibility = View.VISIBLE
+                                subtitleView.setSubtitles(zh, en)
+
+                                mainHandler.removeCallbacks(clearSubtitleRunnable)
+                                mainHandler.postDelayed(clearSubtitleRunnable, 5000)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+        })
     }
 
     private fun setupFloatingWindow() {
@@ -175,7 +243,7 @@ class FloatingLyricsService : Service() {
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            300, // 增加高度以容纳双行大字号影视字幕与阴影
+            360, // 360px 高度完美容纳双行大字号影视字幕与光晕
             layoutParamsType,
             // 核心 Flag：完全不抢占遥控器焦点，手势/点击彻底穿透
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -184,7 +252,7 @@ class FloatingLyricsService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM // 默认吸附在屏幕底部（看视频时不遮挡人脸）
-            y = 70 // 距离底部边距 (黄金视线比例)
+            y = 60 // 距离底部边距
         }
 
         windowManager.addView(containerLayout, params)
