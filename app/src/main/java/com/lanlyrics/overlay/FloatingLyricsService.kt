@@ -84,10 +84,13 @@ class FloatingLyricsService : Service() {
             }
             return START_STICKY
         } else if (action == "ACTION_CALIBRATE_TIME") {
-            val calibMs = intent.getLongExtra("CALIBRATE_POSITION_MS", -1L)
-            if (calibMs >= 0) {
-                currentPositionMs = calibMs
-                lastSyncTime = System.currentTimeMillis()
+            // 严格防误伤：仅在影视字幕模式下允许校准时间轴，避免听歌时被流媒体或系统时钟误改
+            if (isSubtitleMode) {
+                val calibMs = intent.getLongExtra("CALIBRATE_POSITION_MS", -1L)
+                if (calibMs >= 0) {
+                    currentPositionMs = calibMs
+                    lastSyncTime = System.currentTimeMillis()
+                }
             }
             return START_STICKY
         } else if (action == "ACTION_ANCHOR_SUBTITLE_TEXT") {
@@ -297,6 +300,15 @@ class FloatingLyricsService : Service() {
                             isPlaying = (state == "playing")
                             currentPositionMs = data.optLong("position_ms", 0L)
                             lastSyncTime = System.currentTimeMillis()
+
+                            if (!isSubtitleMode && isPlaying && lyricsData != null) {
+                                mainHandler.post {
+                                    if (lyricsView.visibility != View.VISIBLE) {
+                                        subtitleView.visibility = View.GONE
+                                        lyricsView.visibility = View.VISIBLE
+                                    }
+                                }
+                            }
                         }
                         "subtitle" -> {
                             // 收到影视双语字幕推送
@@ -375,38 +387,56 @@ class FloatingLyricsService : Service() {
 
     private fun updateLyricsProgress(posMs: Long) {
         val lines = lyricsData?.optJSONArray("lines") ?: return
-        var activeLineObj: JSONObject? = null
+        val len = lines.length()
+        if (len == 0) return
 
-        for (i in 0 until lines.length()) {
+        var activeIndex = -1
+        for (i in 0 until len) {
             val line = lines.getJSONObject(i)
             val start = line.optLong("start")
             val end = line.optLong("end")
             if (posMs in start until end) {
-                activeLineObj = line
+                activeIndex = i
+                break
+            } else if (posMs < start) {
+                if (i > 0) activeIndex = i - 1
                 break
             }
         }
-
-        if (activeLineObj != null) {
-            val text = activeLineObj.optString("text")
-            val wordsArray = activeLineObj.optJSONArray("words")
-            val wordList = mutableListOf<KaraokeLyricsView.WordSegment>()
-
-            if (wordsArray != null) {
-                for (j in 0 until wordsArray.length()) {
-                    val wObj = wordsArray.getJSONObject(j)
-                    wordList.add(
-                        KaraokeLyricsView.WordSegment(
-                            word = wObj.optString("word"),
-                            startMs = wObj.optLong("start"),
-                            endMs = wObj.optLong("end")
-                        )
-                    )
-                }
-            }
-            lyricsView.updateLine(text, wordList)
-            lyricsView.setProgress(posMs)
+        if (activeIndex == -1 && posMs >= lines.getJSONObject(len - 1).optLong("start")) {
+            activeIndex = len - 1
         }
+        if (activeIndex == -1) {
+            activeIndex = 0
+        }
+
+        val activeLineObj = lines.getJSONObject(activeIndex)
+        val text = activeLineObj.optString("text")
+        val startMs = activeLineObj.optLong("start")
+        val endMs = activeLineObj.optLong("end")
+
+        val nextText = if (activeIndex + 1 < len) {
+            lines.getJSONObject(activeIndex + 1).optString("text")
+        } else ""
+
+        val wordsArray = activeLineObj.optJSONArray("words")
+        val wordList = mutableListOf<KaraokeLyricsView.WordSegment>()
+
+        if (wordsArray != null && wordsArray.length() > 0) {
+            for (j in 0 until wordsArray.length()) {
+                val wObj = wordsArray.getJSONObject(j)
+                wordList.add(
+                    KaraokeLyricsView.WordSegment(
+                        word = wObj.optString("word"),
+                        startMs = wObj.optLong("start"),
+                        endMs = wObj.optLong("end")
+                    )
+                )
+            }
+        }
+
+        lyricsView.updateLine(text, nextText, wordList, startMs, endMs)
+        lyricsView.setProgress(posMs)
     }
 
     private fun startForegroundNotification() {

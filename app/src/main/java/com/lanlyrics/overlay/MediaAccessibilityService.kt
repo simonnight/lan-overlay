@@ -194,7 +194,7 @@ class MediaAccessibilityService : AccessibilityService() {
 
     private fun detectPlaybackTime(texts: List<String>) {
         for (text in texts) {
-            // 优先匹配双时间戳 23:15 / 54:00
+            // 优先且唯一完全可信：双时间戳 23:15 / 54:00
             val dualMatcher = DUAL_TIME_PATTERN.matcher(text)
             if (dualMatcher.find()) {
                 val curTimeStr = dualMatcher.group(1) ?: continue
@@ -205,14 +205,17 @@ class MediaAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // 备选匹配单时间戳 (如 23:15)
-            val singleMatcher = SINGLE_TIME_PATTERN.matcher(text)
-            if (singleMatcher.find()) {
-                val curTimeStr = singleMatcher.group(1) ?: continue
-                val curMs = parseTimeStringToMs(curTimeStr)
-                if (curMs > 0) {
-                    dispatchCalibrateTime(curMs)
-                    return
+            // 备选匹配明确带有负号的倒计时时间戳 (如 -31:45，绝不匹配系统时钟 01:56)
+            val t = text.trim()
+            if (t.startsWith("-")) {
+                val singleMatcher = SINGLE_TIME_PATTERN.matcher(t)
+                if (singleMatcher.find()) {
+                    val curTimeStr = singleMatcher.group(1) ?: continue
+                    val curMs = parseTimeStringToMs(curTimeStr)
+                    if (curMs > 0) {
+                        dispatchCalibrateTime(curMs)
+                        return
+                    }
                 }
             }
         }
