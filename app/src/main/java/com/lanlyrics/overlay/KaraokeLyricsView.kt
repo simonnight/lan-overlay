@@ -54,7 +54,15 @@ class KaraokeLyricsView @JvmOverloads constructor(
         val endMs: Long
     )
 
-    fun updateLine(text: String, next: String = "", words: List<WordSegment> = emptyList(), startMs: Long = 0L, endMs: Long = 0L) {
+    fun updateLine(text: String, words: List<WordSegment>) {
+        updateLine(text, "", words, 0L, 0L)
+    }
+
+    fun updateLine(text: String) {
+        updateLine(text, "", emptyList(), 0L, 0L)
+    }
+
+    fun updateLine(text: String, next: String, words: List<WordSegment>, startMs: Long, endMs: Long) {
         this.currentText = text
         this.nextText = next
         this.wordsList = words

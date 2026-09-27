@@ -291,7 +291,7 @@ class FloatingLyricsService : Service() {
                                 subtitleView.visibility = View.GONE
                                 lyricsView.visibility = View.VISIBLE
                                 if (!isPlaying || title.isEmpty()) {
-                                    lyricsView.updateLine("", emptyList())
+                                    lyricsView.updateLine("")
                                 }
                             }
                         }
