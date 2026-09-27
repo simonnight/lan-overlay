@@ -16,6 +16,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -181,9 +183,11 @@ class FloatingLyricsService : Service() {
             put("duration", 5000)
         }.toString()
 
+        val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+        val reqBody = jsonBody.toRequestBody(mediaType)
         val req = Request.Builder()
             .url(url)
-            .post(RequestBody.create(MediaType.parse("application/json; charset=utf-8"), jsonBody))
+            .post(reqBody)
             .build()
 
         client.newCall(req).enqueue(object : Callback {

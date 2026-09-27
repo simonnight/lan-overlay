@@ -193,6 +193,32 @@ class MediaAccessibilityService : AccessibilityService() {
             .replace("黑鏡", "黑镜")
     }
 
+    private fun detectPlaybackTime(texts: List<String>) {
+        for (text in texts) {
+            // 优先匹配双时间戳 23:15 / 54:00
+            val dualMatcher = DUAL_TIME_PATTERN.matcher(text)
+            if (dualMatcher.find()) {
+                val curTimeStr = dualMatcher.group(1) ?: continue
+                val curMs = parseTimeStringToMs(curTimeStr)
+                if (curMs > 0) {
+                    dispatchCalibrateTime(curMs)
+                    return
+                }
+            }
+
+            // 备选匹配单时间戳 (如 23:15)
+            val singleMatcher = SINGLE_TIME_PATTERN.matcher(text)
+            if (singleMatcher.find()) {
+                val curTimeStr = singleMatcher.group(1) ?: continue
+                val curMs = parseTimeStringToMs(curTimeStr)
+                if (curMs > 0) {
+                    dispatchCalibrateTime(curMs)
+                    return
+                }
+            }
+        }
+    }
+
     private fun detectSubtitleTextAnchor(texts: List<String>) {
         val now = System.currentTimeMillis()
         for (text in texts) {
