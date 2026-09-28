@@ -232,6 +232,7 @@ class FloatingLyricsService : Service() {
                                 mainHandler.postDelayed(clearSubtitleRunnable, 5000)
                             }
                         }
+                        Unit
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
