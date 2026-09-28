@@ -50,6 +50,7 @@ class FloatingLyricsService : Service() {
     )
     private var subtitleTimeline: List<SubtitleLine> = emptyList()
     private var isSubtitleMode = false
+    private var enableLyricsOnTv = false // 电视端默认专注影视剧双语字幕，绝不在电视上显示音乐歌词
 
     // 60FPS 逐帧平滑驱动时钟
     private val frameRunnable = object : Runnable {
@@ -59,7 +60,7 @@ class FloatingLyricsService : Service() {
 
             if (isSubtitleMode) {
                 updateSubtitleProgress(livePos)
-            } else if (isPlaying && lyricsData != null) {
+            } else if (enableLyricsOnTv && isPlaying && lyricsData != null) {
                 updateLyricsProgress(livePos)
             }
             mainHandler.postDelayed(this, 16) // ~60fps
@@ -68,6 +69,7 @@ class FloatingLyricsService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        enableLyricsOnTv = getSharedPreferences("lyrics_cfg", Context.MODE_PRIVATE).getBoolean("enable_lyrics_on_tv", false)
         startForegroundNotification()
         setupFloatingWindow()
         mainHandler.post(frameRunnable)
@@ -144,16 +146,25 @@ class FloatingLyricsService : Service() {
         val cleanAnchor = anchor.trim()
         if (cleanAnchor.length < 2) return
 
-        // 1. 如果本地已有整集时间轴，做绝对时间硬对齐
-        if (subtitleTimeline.isNotEmpty()) {
-            val anchorKey = cleanAnchor.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
-            for (item in subtitleTimeline) {
-                val cleanZh = item.zh.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
-                val cleanEn = item.en.lowercase().replace(Regex("[^a-zA-Z0-9\u4e00-\u9fa5]"), "")
+        // 0. 如果截获的台词包含中文字符，说明用户在播放器中选了官方中文字幕（韩剧/日剧/国剧等）
+        val hasZh = cleanAnchor.any { it in '\u4e00'..'\u9fa5' }
+        if (hasZh) {
+            // 用户正在看官方原版中文字幕！坚决不画蛇添足加副字幕，悬浮窗直接避让隐藏，100% 保持官方中文原貌！
+            mainHandler.post {
+                subtitleView.clear()
+                subtitleView.visibility = View.GONE
+            }
+            return
+        }
 
-                if ((cleanZh.isNotEmpty() && (cleanZh.contains(anchorKey) || anchorKey.contains(cleanZh))) ||
-                    (cleanEn.isNotEmpty() && (cleanEn.contains(anchorKey) || anchorKey.contains(cleanEn)))) {
-                    android.util.Log.i("FloatingLyricsService", "命中本地时间轴锚点！精准校准至: ${item.startMs}ms (台词: ${item.zh})")
+        // 1. 如果本地已有整集时间轴（从 NAS 预加载的人工精校/官方双轨），做绝对时间硬对齐
+        if (subtitleTimeline.isNotEmpty()) {
+            val anchorKey = cleanAnchor.lowercase().replace(Regex("[^a-zA-Z0-9]"), "")
+            for (item in subtitleTimeline) {
+                val cleanEn = item.en.lowercase().replace(Regex("[^a-zA-Z0-9]"), "")
+
+                if (cleanEn.isNotEmpty() && (cleanEn.contains(anchorKey) || anchorKey.contains(cleanEn))) {
+                    android.util.Log.i("FloatingLyricsService", "命中精校时间轴台词！精准校准至: ${item.startMs}ms (台词: ${item.zh})")
                     currentPositionMs = item.startMs
                     lastSyncTime = System.currentTimeMillis()
                     mainHandler.post {
@@ -167,7 +178,7 @@ class FloatingLyricsService : Service() {
             }
         }
 
-        // 2. 无论是否有整集时间轴，只要抓到台词，立即调用实时双语补齐接口！
+        // 2. 如果未在已加载时间轴中命中，且是纯英文：向 NAS 请求检索精校库 (绝不用机翻)
         val now = System.currentTimeMillis()
         if (cleanAnchor == lastLiveText && now - lastLiveTextTime < 2500) {
             return
@@ -195,16 +206,22 @@ class FloatingLyricsService : Service() {
 
         client.newCall(req).enqueue(object : Callback {
             override fun onFailure(call: Call, e: java.io.IOException) {
-                android.util.Log.e("FloatingLyricsService", "实时双语网络请求失败: ${e.message}")
+                android.util.Log.e("FloatingLyricsService", "请求字幕中枢失败: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.body?.string()?.let { respStr ->
                     try {
                         val obj = JSONObject(respStr)
+                        val mode = obj.optString("mode", "")
                         val zh = obj.optString("zh", "")
                         val en = obj.optString("en", "")
-                        if (zh.isNotEmpty() || en.isNotEmpty()) {
+                        if (mode == "passthrough" || (zh.isEmpty() && en.isEmpty())) {
+                            mainHandler.post {
+                                subtitleView.clear()
+                                subtitleView.visibility = View.GONE
+                            }
+                        } else if (zh.isNotEmpty() || en.isNotEmpty()) {
                             mainHandler.post {
                                 isSubtitleMode = true
                                 lyricsView.visibility = View.GONE
@@ -240,6 +257,7 @@ class FloatingLyricsService : Service() {
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
         subtitleView.visibility = View.GONE
+        lyricsView.visibility = View.GONE
 
         val layoutParamsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -267,7 +285,8 @@ class FloatingLyricsService : Service() {
 
     private fun connectWebSocket(serverIp: String) {
         webSocket?.close(1000, "重新连接")
-        val wsUrl = if (serverIp.startsWith("ws://")) serverIp else "ws://$serverIp/ws"
+        val rawUrl = if (serverIp.startsWith("ws://")) serverIp else "ws://$serverIp/ws"
+        val wsUrl = if (rawUrl.contains("client=")) rawUrl else (if (rawUrl.contains("?")) "$rawUrl&client=tv" else "$rawUrl?client=tv")
         val request = Request.Builder().url(wsUrl).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -279,6 +298,10 @@ class FloatingLyricsService : Service() {
 
                     when (type) {
                         "init", "track_change" -> {
+                            if (!enableLyricsOnTv) {
+                                // 电视端纯净模式：绝不在电视上显示音乐歌词，直接忽略
+                                return
+                            }
                             val title = data.optString("title", "")
                             val state = data.optString("state", "")
                             isPlaying = (state == "playing")
@@ -296,6 +319,7 @@ class FloatingLyricsService : Service() {
                             }
                         }
                         "sync" -> {
+                            if (!enableLyricsOnTv) return
                             val state = data.optString("state", "")
                             isPlaying = (state == "playing")
                             currentPositionMs = data.optLong("position_ms", 0L)
@@ -329,6 +353,13 @@ class FloatingLyricsService : Service() {
 
     private fun handleSubtitlePayload(data: JSONObject) {
         mainHandler.post {
+            val mode = data.optString("mode", "")
+            if (mode == "passthrough") {
+                subtitleView.clear()
+                subtitleView.visibility = View.GONE
+                return@post
+            }
+
             isSubtitleMode = true
             lyricsView.visibility = View.GONE
             subtitleView.visibility = View.VISIBLE

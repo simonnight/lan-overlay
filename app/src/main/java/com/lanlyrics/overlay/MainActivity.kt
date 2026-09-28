@@ -24,16 +24,16 @@ class MainActivity : Activity() {
         }
 
         val titleView = TextView(this).apply {
-            text = "局域网影视双语字幕 & 悬浮歌词"
+            text = "局域网影视双语字幕助手 (TV 版)"
             textSize = 24f
             setTextColor(0xFFFFFFFF.toInt())
         }
         layout.addView(titleView)
 
         val descView = TextView(this).apply {
-            text = "请输入 NAS 服务地址 (已默认填好):"
-            textSize = 16f
-            setPadding(0, 30, 0, 10)
+            text = "💡 电视端专为看影视剧提供中英双语辅助字幕打造，电脑听歌不会打扰电视。\n请输入 NAS 服务地址:"
+            textSize = 15f
+            setPadding(0, 20, 0, 10)
             setTextColor(0xFFAAAAAA.toInt())
         }
         layout.addView(descView)
@@ -45,8 +45,20 @@ class MainActivity : Activity() {
         }
         layout.addView(ipEdit)
 
+        val lyricsCheck = android.widget.CheckBox(this).apply {
+            text = "在电视上显示音乐歌词 (默认关闭，电视专注影视字幕)"
+            isChecked = prefs.getBoolean("enable_lyrics_on_tv", false)
+            setTextColor(0xFFCCCCCC.toInt())
+            textSize = 14f
+            setPadding(0, 10, 0, 20)
+            setOnCheckedChangeListener { _, isChecked ->
+                prefs.edit().putBoolean("enable_lyrics_on_tv", isChecked).apply()
+            }
+        }
+        layout.addView(lyricsCheck)
+
         val startBtn = Button(this).apply {
-            text = "启动悬浮歌词服务"
+            text = "启动影视双语字幕服务"
             textSize = 18f
             setOnClickListener {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
@@ -70,8 +82,8 @@ class MainActivity : Activity() {
                 } else {
                     startService(serviceIntent)
                 }
-                Toast.makeText(this@MainActivity, "悬浮歌词服务已启动！可直接退回主页", Toast.LENGTH_SHORT).show()
-                finish() // 启动后直接退出界面，保持后台服务运行
+                Toast.makeText(this@MainActivity, "双语字幕服务已就绪！看剧时自动显示", Toast.LENGTH_SHORT).show()
+                finish()
             }
         }
         layout.addView(startBtn)
