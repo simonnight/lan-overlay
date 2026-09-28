@@ -3,6 +3,7 @@ package com.lanlyrics.overlay
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -58,16 +59,25 @@ class MediaAccessibilityService : AccessibilityService() {
     private var lastAnchorText = ""
     private var lastAnchorTime = 0L
 
+    private fun dispatchToFloatingService(intent: Intent) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "分发至悬浮服务异常: ${e.message}")
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         try {
-            val info = serviceInfo ?: AccessibilityServiceInfo()
-            info.flags = info.flags or
-                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-            serviceInfo = info
+            val intent = Intent(this, FloatingLyricsService::class.java)
+            dispatchToFloatingService(intent)
         } catch (e: Throwable) {
-            Log.w(TAG, "微调 serviceInfo 异常，使用 XML 默认配置: ${e.message}")
+            Log.w(TAG, "无障碍自动拉起悬浮服务异常: ${e.message}")
         }
         Log.i(TAG, "影视无障碍感知服务已连接 (SubSync Auto Sense)！")
     }
@@ -179,7 +189,7 @@ class MediaAccessibilityService : AccessibilityService() {
                 putExtra("MEDIA_TITLE", fullTitle)
                 putExtra("PACKAGE_NAME", pkg)
             }
-            startService(intent)
+            dispatchToFloatingService(intent)
         }
     }
 
@@ -241,7 +251,7 @@ class MediaAccessibilityService : AccessibilityService() {
                         action = "ACTION_ANCHOR_SUBTITLE_TEXT"
                         putExtra("ANCHOR_TEXT", t)
                     }
-                    startService(intent)
+                    dispatchToFloatingService(intent)
                     break
                 }
             }
@@ -262,7 +272,7 @@ class MediaAccessibilityService : AccessibilityService() {
             action = "ACTION_CALIBRATE_TIME"
             putExtra("CALIBRATE_POSITION_MS", targetMs)
         }
-        startService(intent)
+        dispatchToFloatingService(intent)
     }
 
     private fun parseTimeStringToMs(timeStr: String): Long {

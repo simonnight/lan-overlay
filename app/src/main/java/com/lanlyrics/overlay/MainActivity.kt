@@ -109,5 +109,23 @@ class MainActivity : Activity() {
         layout.addView(stopBtn)
 
         setContentView(layout)
+
+        // 电视启动体验优化：若已具备悬浮窗权限，自动秒级静默启动后台服务，无需遥控器繁琐点击
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)) {
+            val ipText = prefs.getString("server_ip", "192.168.200.120:8990") ?: "192.168.200.120:8990"
+            val serviceIntent = Intent(this, FloatingLyricsService::class.java).apply {
+                putExtra("SERVER_IP", ipText)
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    startService(serviceIntent)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 }
+
